@@ -1,0 +1,20 @@
+[project]
+name = "rekah-unreal-mcp"
+version = "0.1.0"
+description = "MCP server for Unreal Engine development"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+rekah-mcp = "rekah_unreal_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

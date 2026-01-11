@@ -2,14 +2,14 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from rekah_unreal_mcp.tools.build import register_build_tools
+from rekah_unreal_mcp.tools.hello import register_hello_tools
 
 mcp = FastMCP("rekah-unreal")
 
 
 def main():
     """Main entry point for the MCP server."""
-    register_build_tools(mcp)
+    register_hello_tools(mcp)
     mcp.run()
 
 

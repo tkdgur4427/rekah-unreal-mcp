@@ -9,7 +9,7 @@ import pytest
 import asyncio
 from pathlib import Path
 
-from rekah_unreal_mcp.lsp.client import LSPClient
+from rekah_mcp.lsp.client import LSPClient
 
 # Test configuration
 PROJECT_DIR = "D:/BttUnrealEngine"
@@ -174,13 +174,69 @@ class TestE2ELSPClient:
                 break
 
 
+class TestE2ELSPManager:
+    """E2E tests for LSPManager (shared instance)."""
+
+    @pytest.fixture
+    async def manager(self):
+        """Get manager and ensure setup."""
+        from rekah_mcp.lsp.manager import get_lsp_manager
+        manager = get_lsp_manager()
+        await manager.setup(PROJECT_DIR)
+        await manager.ensure_running()
+        yield manager
+
+    async def test_manager_workspace_symbol(self, manager):
+        """Test workspace symbol via manager."""
+        symbols = await manager.workspace_symbol("AActor")
+
+        # Note: Result count depends on clangd indexing state (cold start may return 0)
+        print(f"🔍 [Manager] Found {len(symbols)} symbols matching 'AActor' (cold start may be 0)")
+
+    async def test_manager_find_definition(self, manager):
+        """Test find definition via manager."""
+        test_file = Path(PROJECT_DIR) / "Engine/Source/Runtime/Engine/Classes/GameFramework/Actor.h"
+        if not test_file.exists():
+            pytest.skip(f"Test file not found: {test_file}")
+
+        # Find AActor class definition (line ~256)
+        locations = await manager.find_definition(str(test_file), 256, 10)
+        print(f"📍 [Manager] Found {len(locations)} definition(s)")
+
+    async def test_manager_go_to_implementation(self, manager):
+        """Test goToImplementation via manager (Tick function)."""
+        test_file = Path(PROJECT_DIR) / "Engine/Source/Runtime/Engine/Classes/GameFramework/Actor.h"
+        if not test_file.exists():
+            pytest.skip(f"Test file not found: {test_file}")
+
+        # Find Tick function implementations (line 3059, character 15)
+        locations = await manager.go_to_implementation(str(test_file), 3059, 15)
+        print(f"🔧 [Manager] Found {len(locations)} implementation(s) of Tick")
+
+    async def test_manager_incoming_calls(self, manager):
+        """Test incomingCalls via manager."""
+        test_file = Path(PROJECT_DIR) / "Engine/Source/Runtime/Engine/Classes/GameFramework/Actor.h"
+        if not test_file.exists():
+            pytest.skip(f"Test file not found: {test_file}")
+
+        # First prepare call hierarchy for BeginPlay (line 2128)
+        items = await manager.prepare_call_hierarchy(str(test_file), 2128, 15)
+        if items:
+            callers = await manager.incoming_calls(items[0])
+            print(f"📞 [Manager] Found {len(callers)} caller(s) of BeginPlay")
+
+
 if __name__ == "__main__":
     # Run a quick manual test
     async def manual_test():
+        from rekah_mcp.lsp.manager import get_lsp_manager
+
         print("=" * 60)
         print("E2E LSP Test with real clangd")
         print("=" * 60)
 
+        # Test 1: Direct LSPClient
+        print("\n[Part 1: Direct LSPClient]")
         client = LSPClient(
             project_dir=PROJECT_DIR,
             compile_commands_dir=COMPILE_COMMANDS_DIR,
@@ -216,6 +272,27 @@ if __name__ == "__main__":
             print("\n5. Stopping clangd...")
             await client.stop()
             print("   ✅ clangd stopped")
+
+        # Test 2: LSPManager (shared instance)
+        print("\n" + "-" * 60)
+        print("[Part 2: LSPManager (Shared Instance)]")
+
+        manager = get_lsp_manager()
+        result = await manager.setup(PROJECT_DIR)
+        print(f"\n1. Setup: {result[:80]}...")
+
+        error = await manager.ensure_running()
+        print(f"2. Running: {manager.is_running}, Error: {error}")
+
+        print("\n3. Workspace symbol 'BeginPlay'...")
+        symbols = await manager.workspace_symbol("BeginPlay")
+        print(f"   ✅ Found {len(symbols)} symbols")
+
+        print("\n4. goToImplementation for Tick (line 3059, char 15)...")
+        test_file = Path(PROJECT_DIR) / "Engine/Source/Runtime/Engine/Classes/GameFramework/Actor.h"
+        if test_file.exists():
+            impls = await manager.go_to_implementation(str(test_file), 3059, 15)
+            print(f"   ✅ Found {len(impls)} implementation(s)")
 
         print("\n" + "=" * 60)
         print("E2E Test Complete!")

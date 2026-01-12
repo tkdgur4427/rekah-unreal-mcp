@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from rekah_unreal_mcp.lsp.protocol import JSONRPCProtocol
+from rekah_mcp.lsp.protocol import JSONRPCProtocol
 
 
 class LSPClient:

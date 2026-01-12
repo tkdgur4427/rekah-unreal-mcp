@@ -1,7 +1,8 @@
 """LSP-related MCP tools for Unreal Engine C++ development.
 
-This module re-implements Claude Code's built-in LSP Tool functionality as MCP tools,
-working around the textDocument/didOpen bug by managing clangd directly.
+This module provides MCP tools for C++ code analysis using clangd LSP.
+All tools use the shared LSPManager singleton to ensure only one clangd
+instance runs regardless of agent count.
 
 Tools (11 total):
 - Setup: setup_lsp, lsp_status
@@ -13,58 +14,16 @@ Tools (11 total):
 from mcp.server.fastmcp import FastMCP
 from pathlib import Path
 from typing import Optional
-import shutil
 import json
 
-# Global LSP client instance (None until setup_lsp is called)
-_lsp_client: Optional["LSPClient"] = None
-_lsp_setup_error: Optional[str] = None
-
-
-def get_lsp_client():
-    """Get LSP client singleton. Returns None if not setup."""
-    return _lsp_client
-
-
-def _check_lsp_setup() -> Optional[str]:
-    """Check if LSP is properly setup. Returns error message if not."""
-    if _lsp_client is None:
-        return (
-            "⚠️ LSP not initialized!\n"
-            "Please call 'setup_lsp' tool first with your Unreal Engine project directory.\n"
-            "Example: setup_lsp(project_dir=\"D:/MyUnrealProject\")"
-        )
-    if _lsp_setup_error:
-        return f"⚠️ LSP setup failed: {_lsp_setup_error}"
-    return None
-
-
-async def _ensure_client_ready() -> Optional[str]:
-    """Ensure LSP client is setup and clangd is running.
-
-    Returns:
-        None if ready, error message string if not ready.
-    """
-    # Check setup first
-    setup_error = _check_lsp_setup()
-    if setup_error:
-        return setup_error
-
-    # Start clangd if not running
-    if _lsp_client.process is None:
-        try:
-            await _lsp_client.start()
-        except Exception as e:
-            return f"⚠️ Failed to start clangd: {e}"
-
-    return None
+from rekah_mcp.lsp.manager import get_lsp_manager
 
 
 def register_lsp_tools(mcp: FastMCP):
     """Register all LSP-related MCP tools (11 tools total)."""
 
     # ═══════════════════════════════════════════════════════════════════
-    # Setup Tools (MUST call setup_lsp first)
+    # Setup Tools
     # ═══════════════════════════════════════════════════════════════════
 
     @mcp.tool()
@@ -88,68 +47,8 @@ def register_lsp_tools(mcp: FastMCP):
         Example:
             setup_lsp(project_dir="D:/BttUnrealEngine")
         """
-        global _lsp_client, _lsp_setup_error
-
-        from rekah_unreal_mcp.lsp.client import LSPClient
-
-        project_path = Path(project_dir)
-
-        # Validate project directory
-        if not project_path.exists():
-            _lsp_setup_error = f"Project directory not found: {project_dir}"
-            return f"❌ {_lsp_setup_error}"
-
-        # Check for compile_commands.json
-        cc_dir = Path(compile_commands_dir) if compile_commands_dir else project_path
-        cc_path = cc_dir / "compile_commands.json"
-
-        if not cc_path.exists():
-            _lsp_setup_error = f"compile_commands.json not found at: {cc_path}"
-            return (
-                f"❌ {_lsp_setup_error}\n\n"
-                "To generate compile_commands.json, run:\n"
-                "  UnrealBuildTool -Mode=GenerateClangDatabase -Project=YourProject.uproject\n"
-                "Or use the Unreal Editor: Tools > Generate Clang Database"
-            )
-
-        # Check clangd availability
-        if not shutil.which("clangd"):
-            _lsp_setup_error = "clangd not found in PATH"
-            return (
-                f"❌ {_lsp_setup_error}\n\n"
-                "Please install clangd:\n"
-                "  - Windows: choco install llvm or download from https://releases.llvm.org/\n"
-                "  - Verify: clangd --version"
-            )
-
-        # Stop existing client if any
-        if _lsp_client is not None:
-            try:
-                await _lsp_client.stop()
-            except Exception:
-                pass
-
-        # Create new LSP client
-        try:
-            _lsp_client = LSPClient(
-                project_dir=str(project_path),
-                compile_commands_dir=str(cc_dir),
-            )
-            _lsp_setup_error = None
-
-            return (
-                f"✅ LSP initialized successfully!\n"
-                f"  Project: {project_dir}\n"
-                f"  compile_commands.json: {cc_path}\n"
-                f"\n"
-                f"You can now use LSP tools:\n"
-                f"  - goToDefinition, findReferences, hover\n"
-                f"  - documentSymbol, workspaceSymbol, goToImplementation\n"
-                f"  - prepareCallHierarchy, incomingCalls, outgoingCalls"
-            )
-        except Exception as e:
-            _lsp_setup_error = str(e)
-            return f"❌ Failed to initialize LSP: {e}"
+        manager = get_lsp_manager()
+        return await manager.setup(project_dir, compile_commands_dir)
 
     @mcp.tool()
     async def lsp_status() -> str:
@@ -158,7 +57,9 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Current LSP configuration and status
         """
-        if _lsp_client is None:
+        manager = get_lsp_manager()
+
+        if not manager.is_setup:
             return (
                 "📊 LSP Status: NOT INITIALIZED\n\n"
                 "Call 'setup_lsp' first to initialize.\n"
@@ -166,14 +67,14 @@ def register_lsp_tools(mcp: FastMCP):
             )
 
         status_lines = [
-            "📊 LSP Status: INITIALIZED",
-            f"  Project: {_lsp_client.project_dir}",
-            f"  clangd running: {'Yes' if _lsp_client.process else 'No'}",
-            f"  Open files: {len(_lsp_client.open_files)}",
+            "📊 LSP Status: INITIALIZED (shared instance)",
+            f"  Project: {manager.project_dir}",
+            f"  clangd running: {'Yes' if manager.is_running else 'No'}",
+            f"  Open files: {manager.open_files_count}",
         ]
 
-        if _lsp_setup_error:
-            status_lines.append(f"  ⚠️ Last error: {_lsp_setup_error}")
+        if manager.setup_error:
+            status_lines.append(f"  ⚠️ Last error: {manager.setup_error}")
 
         return "\n".join(status_lines)
 
@@ -197,11 +98,12 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Definition location(s) as formatted string
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
-        locations = await _lsp_client.find_definition(file_path, line, character)
+        locations = await manager.find_definition(file_path, line, character)
 
         if not locations:
             return f"No definition found at {file_path}:{line}:{character}"
@@ -230,11 +132,12 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Reference locations as formatted string
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
-        locations = await _lsp_client.find_references(
+        locations = await manager.find_references(
             file_path, line, character, include_declaration
         )
 
@@ -263,11 +166,12 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Symbol type and documentation information
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
-        hover_info = await _lsp_client.get_hover(file_path, line, character)
+        hover_info = await manager.get_hover(file_path, line, character)
 
         if hover_info is None:
             return f"No hover information at {file_path}:{line}:{character}"
@@ -288,11 +192,12 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Formatted list of all symbols in the document
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
-        symbols = await _lsp_client.document_symbol(file_path)
+        symbols = await manager.document_symbol(file_path)
 
         if not symbols:
             return f"No symbols found in {file_path}"
@@ -320,11 +225,12 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Matching symbols across the project
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
-        symbols = await _lsp_client.workspace_symbol(query)
+        symbols = await manager.workspace_symbol(query)
 
         if not symbols:
             return f"No symbols matching '{query}' found in workspace"
@@ -356,11 +262,12 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Implementation locations
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
-        locations = await _lsp_client.go_to_implementation(file_path, line, character)
+        locations = await manager.go_to_implementation(file_path, line, character)
 
         if not locations:
             return f"No implementations found at {file_path}:{line}:{character}"
@@ -393,11 +300,12 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             Call hierarchy item information (JSON format for use with other calls)
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
-        items = await _lsp_client.prepare_call_hierarchy(file_path, line, character)
+        items = await manager.prepare_call_hierarchy(file_path, line, character)
 
         if not items:
             return f"No callable symbol at {file_path}:{line}:{character}"
@@ -431,17 +339,18 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             List of callers with their locations
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
         # First prepare call hierarchy
-        items = await _lsp_client.prepare_call_hierarchy(file_path, line, character)
+        items = await manager.prepare_call_hierarchy(file_path, line, character)
         if not items:
             return f"No callable symbol at {file_path}:{line}:{character}"
 
         # Get incoming calls
-        callers = await _lsp_client.incoming_calls(items[0])
+        callers = await manager.incoming_calls(items[0])
 
         if not callers:
             return f"No incoming calls found for symbol at {file_path}:{line}:{character}"
@@ -472,17 +381,18 @@ def register_lsp_tools(mcp: FastMCP):
         Returns:
             List of callees with their locations
         """
-        error = await _ensure_client_ready()
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
         if error:
             return error
 
         # First prepare call hierarchy
-        items = await _lsp_client.prepare_call_hierarchy(file_path, line, character)
+        items = await manager.prepare_call_hierarchy(file_path, line, character)
         if not items:
             return f"No callable symbol at {file_path}:{line}:{character}"
 
         # Get outgoing calls
-        callees = await _lsp_client.outgoing_calls(items[0])
+        callees = await manager.outgoing_calls(items[0])
 
         if not callees:
             return f"No outgoing calls found for symbol at {file_path}:{line}:{character}"

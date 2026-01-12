@@ -2,8 +2,8 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from rekah_unreal_mcp.tools.hello import register_hello_tools
-from rekah_unreal_mcp.tools.lsp_tools import register_lsp_tools
+from rekah_mcp.tools.hello import register_hello_tools
+from rekah_mcp.tools.lsp_tools import register_lsp_tools
 
 mcp = FastMCP("rekah-unreal")
 

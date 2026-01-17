@@ -40,3 +40,10 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Config
+config.ini
+
+# Logs and temp files
+logs/
+intermediates/

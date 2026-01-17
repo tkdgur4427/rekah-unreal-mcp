@@ -1,14 +1,14 @@
-"""LSP-related MCP tools for Unreal Engine C++ development.
+"""LSP-related MCP tools for Unreal Engine C++ development
 
-This module provides MCP tools for C++ code analysis using clangd LSP.
-All tools use the shared LSPManager singleton to ensure only one clangd
+this module provides MCP tools for C++ code analysis using clangd LSP.
+all tools use the shared LSPManager singleton to ensure only one clangd
 instance runs regardless of agent count.
 
-Tools (11 total):
-- Setup: setup_lsp, lsp_status
-- P0: goToDefinition, findReferences, hover
-- P1: documentSymbol, workspaceSymbol, goToImplementation
-- P2: prepareCallHierarchy, incomingCalls, outgoingCalls
+tools (11 total):
+- setup: setup_lsp, lsp_status
+- core: goToDefinition, findReferences, hover
+- extended: documentSymbol, workspaceSymbol, goToImplementation
+- call hierarchy: prepareCallHierarchy, incomingCalls, outgoingCalls
 """
 
 from mcp.server.fastmcp import FastMCP
@@ -16,14 +16,14 @@ from pathlib import Path
 from typing import Optional
 import json
 
-from rekah_mcp.lsp.manager import get_lsp_manager
+from rekah_mcp.lsp.lsp_utils import get_lsp_manager
 
 
 def register_lsp_tools(mcp: FastMCP):
-    """Register all LSP-related MCP tools (11 tools total)."""
+    """register all LSP-related MCP tools (11 tools total)"""
 
     # ═══════════════════════════════════════════════════════════════════
-    # Setup Tools
+    # setup tools
     # ═══════════════════════════════════════════════════════════════════
 
     @mcp.tool()
@@ -71,6 +71,7 @@ def register_lsp_tools(mcp: FastMCP):
             f"  Project: {manager.project_dir}",
             f"  clangd running: {'Yes' if manager.is_running else 'No'}",
             f"  Open files: {manager.open_files_count}",
+            f"  Indexing: {manager.indexing_status}",
         ]
 
         if manager.setup_error:
@@ -78,8 +79,40 @@ def register_lsp_tools(mcp: FastMCP):
 
         return "\n".join(status_lines)
 
+    @mcp.tool()
+    async def wait_for_file(
+        file_path: str,
+        timeout: float = 30.0,
+    ) -> str:
+        """Wait for a specific file to be indexed by clangd.
+
+        Use this before LSP operations on a file to ensure accurate results.
+        clangd indexes files on demand - this waits for the indexing to complete.
+
+        Args:
+            file_path: Absolute path to the source file
+            timeout: Maximum wait time in seconds (default: 30)
+
+        Returns:
+            Status message indicating if file was indexed
+
+        Example:
+            wait_for_file(file_path="D:/Project/Source/Actor.h", timeout=60)
+        """
+        manager = get_lsp_manager()
+        error = await manager.ensure_running()
+        if error:
+            return error
+
+        result = await manager.wait_for_file(file_path, timeout)
+
+        if result:
+            return f"✅ File indexed: {file_path}"
+        else:
+            return f"⏱️ Timeout waiting for file indexing: {file_path}\n(File may still be processing in background)"
+
     # ═══════════════════════════════════════════════════════════════════
-    # P0: Core Features (Essential)
+    # core features (essential)
     # ═══════════════════════════════════════════════════════════════════
 
     @mcp.tool()
@@ -179,7 +212,7 @@ def register_lsp_tools(mcp: FastMCP):
         return f"Hover information:\n{hover_info}"
 
     # ═══════════════════════════════════════════════════════════════════
-    # P1: Extended Features
+    # extended features
     # ═══════════════════════════════════════════════════════════════════
 
     @mcp.tool()
@@ -236,7 +269,7 @@ def register_lsp_tools(mcp: FastMCP):
             return f"No symbols matching '{query}' found in workspace"
 
         result_lines = [f"Symbols matching '{query}' ({len(symbols)} found):"]
-        for sym in symbols[:50]:  # Limit to 50 results
+        for sym in symbols[:50]:  # limit to 50 results
             result_lines.append(
                 f"  {sym['kind']}: {sym['name']} - {sym['file']}:{sym['line']}"
             )
@@ -270,7 +303,11 @@ def register_lsp_tools(mcp: FastMCP):
         locations = await manager.go_to_implementation(file_path, line, character)
 
         if not locations:
-            return f"No implementations found at {file_path}:{line}:{character}"
+            msg = f"No implementations found at {file_path}:{line}:{character}"
+            if manager.is_indexing:
+                msg += f"\n⏳ Background indexing in progress ({manager.indexing_status})"
+            msg += "\n💡 Tip: Use wait_for_file() first to ensure the file is indexed."
+            return msg
 
         result_lines = [f"Implementations ({len(locations)} found):"]
         for loc in locations:
@@ -279,7 +316,7 @@ def register_lsp_tools(mcp: FastMCP):
         return "\n".join(result_lines)
 
     # ═══════════════════════════════════════════════════════════════════
-    # P2: Call Hierarchy Analysis
+    # call hierarchy analysis
     # ═══════════════════════════════════════════════════════════════════
 
     @mcp.tool()
@@ -317,7 +354,7 @@ def register_lsp_tools(mcp: FastMCP):
             result_lines.append(f"  URI: {item.get('uri', 'unknown')}")
             result_lines.append("")
 
-        # Return JSON for use with incomingCalls/outgoingCalls
+        # return JSON for use with incomingCalls/outgoingCalls
         result_lines.append("Raw data (for incomingCalls/outgoingCalls):")
         result_lines.append(json.dumps(items[0] if items else {}, indent=2))
 
@@ -344,16 +381,20 @@ def register_lsp_tools(mcp: FastMCP):
         if error:
             return error
 
-        # First prepare call hierarchy
+        # first prepare call hierarchy
         items = await manager.prepare_call_hierarchy(file_path, line, character)
         if not items:
             return f"No callable symbol at {file_path}:{line}:{character}"
 
-        # Get incoming calls
+        # get incoming calls
         callers = await manager.incoming_calls(items[0])
 
         if not callers:
-            return f"No incoming calls found for symbol at {file_path}:{line}:{character}"
+            msg = f"No incoming calls found for symbol at {file_path}:{line}:{character}"
+            if manager.is_indexing:
+                msg += f"\n⏳ Background indexing in progress ({manager.indexing_status})"
+            msg += "\n💡 Tip: Use wait_for_file() on caller files for more complete results."
+            return msg
 
         result_lines = [f"Incoming calls ({len(callers)} callers):"]
         for caller in callers:
@@ -386,16 +427,20 @@ def register_lsp_tools(mcp: FastMCP):
         if error:
             return error
 
-        # First prepare call hierarchy
+        # first prepare call hierarchy
         items = await manager.prepare_call_hierarchy(file_path, line, character)
         if not items:
             return f"No callable symbol at {file_path}:{line}:{character}"
 
-        # Get outgoing calls
+        # get outgoing calls
         callees = await manager.outgoing_calls(items[0])
 
         if not callees:
-            return f"No outgoing calls found for symbol at {file_path}:{line}:{character}"
+            msg = f"No outgoing calls found for symbol at {file_path}:{line}:{character}"
+            if manager.is_indexing:
+                msg += f"\n⏳ Background indexing in progress ({manager.indexing_status})"
+            msg += "\n💡 Tip: Use wait_for_file() first to ensure the file is indexed."
+            return msg
 
         result_lines = [f"Outgoing calls ({len(callees)} callees):"]
         for callee in callees:

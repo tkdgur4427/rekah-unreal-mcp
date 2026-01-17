@@ -1,0 +1,19 @@
+[lsp]
+# clangd binary path (default: clangd in PATH)
+clangd_path = clangd
+# request timeout (seconds)
+request_timeout = 30
+
+[logging]
+# log directory path
+log_dir = ./logs
+# log level: DEBUG, INFO, WARNING, ERROR
+log_level = INFO
+# log prefix
+prefix = rekah-mcp
+
+[test]
+# temp file directory
+intermediates_dir = ./intermediates
+# e2e test project path (optional)
+test_project_dir =

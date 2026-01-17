@@ -1,7 +1,10 @@
-"""LSP client module for clangd communication."""
+"""LSP client module for clangd communication"""
 
-from rekah_mcp.lsp.client import LSPClient
-from rekah_mcp.lsp.protocol import JSONRPCProtocol
-from rekah_mcp.lsp.manager import LSPManager, get_lsp_manager
+from rekah_mcp.lsp.lsp_utils import (
+    JSONRPCProtocol,
+    LSPClient,
+    LSPManager,
+    get_lsp_manager,
+)
 
-__all__ = ["LSPClient", "JSONRPCProtocol", "LSPManager", "get_lsp_manager"]
+__all__ = ["JSONRPCProtocol", "LSPClient", "LSPManager", "get_lsp_manager"]
